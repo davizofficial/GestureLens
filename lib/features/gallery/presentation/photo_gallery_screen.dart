@@ -1,7 +1,18 @@
 import 'dart:io';
+import 'dart:ui';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../capture/domain/capture_event.dart';
+
+enum _GalleryMediaFilter {
+  all('Semua'),
+  photos('Foto'),
+  videos('Video');
+
+  final String label;
+  const _GalleryMediaFilter(this.label);
+}
 
 class PhotoGalleryScreen extends StatefulWidget {
   final List<SavedPhotoItem> photos;
@@ -18,48 +29,95 @@ class PhotoGalleryScreen extends StatefulWidget {
 }
 
 class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
-  late List<SavedPhotoItem> _items;
-  SavedPhotoItem? _selectedItem;
+  late List<SavedPhotoItem> _allItems;
+  _GalleryMediaFilter _activeFilter = _GalleryMediaFilter.all;
+  int? _fullscreenIndex;
+  PageController? _pageController;
 
   @override
   void initState() {
     super.initState();
-    _items = List<SavedPhotoItem>.from(widget.photos);
-    if (_items.isNotEmpty) {
-      _selectedItem = _items.first;
+    _allItems = List<SavedPhotoItem>.from(widget.photos);
+  }
+
+  @override
+  void dispose() {
+    _pageController?.dispose();
+    super.dispose();
+  }
+
+  List<SavedPhotoItem> get _filteredItems {
+    switch (_activeFilter) {
+      case _GalleryMediaFilter.all:
+        return _allItems;
+      case _GalleryMediaFilter.photos:
+        return _allItems.where((e) => !e.isVideo).toList();
+      case _GalleryMediaFilter.videos:
+        return _allItems.where((e) => e.isVideo).toList();
     }
   }
 
-  String _formatTimestamp(DateTime dt) {
-    final y = dt.year.toString().padLeft(4, '0');
-    final m = dt.month.toString().padLeft(2, '0');
-    final d = dt.day.toString().padLeft(2, '0');
+  String _formatDateShort(DateTime dt) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agu',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des',
+    ];
+    final m = months[(dt.month - 1).clamp(0, 11)];
     final hh = dt.hour.toString().padLeft(2, '0');
     final mm = dt.minute.toString().padLeft(2, '0');
-    final ss = dt.second.toString().padLeft(2, '0');
-    return '$d/$m/$y $hh:$mm:$ss';
+    return '${dt.day} $m ${dt.year} • $hh:$mm';
+  }
+
+  String _formatDuration(int? seconds) {
+    final total = (seconds ?? 1).clamp(0, 3599);
+    final mm = (total ~/ 60).toString();
+    final ss = (total % 60).toString().padLeft(2, '0');
+    return '$mm:$ss';
+  }
+
+  void _openFullscreen(int index) {
+    _pageController?.dispose();
+    _pageController = PageController(initialPage: index);
+    setState(() {
+      _fullscreenIndex = index;
+    });
+  }
+
+  void _closeFullscreen() {
+    setState(() {
+      _fullscreenIndex = null;
+    });
   }
 
   Future<void> _confirmAndDelete(SavedPhotoItem item) async {
-    final confirmed = await showDialog<bool>(
+    final isVideo = item.isVideo;
+    final confirmed = await showCupertinoDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF141B2D),
-        title: const Text(
-          'Hapus Foto?',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: Text(
-          'Foto "${item.filename}" akan dihapus dari riwayat lokal.',
-          style: const TextStyle(color: Colors.white70),
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text(isVideo ? 'Hapus Video?' : 'Hapus Foto?'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            '${isVideo ? "Video" : "Foto"} ini akan dihapus secara permanen dari galeri GestureLens.',
+          ),
         ),
         actions: [
-          TextButton(
+          CupertinoDialogAction(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('Batal'),
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
             onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('Hapus'),
           ),
@@ -72,21 +130,27 @@ class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
     if (!mounted) return;
 
     setState(() {
-      _items.removeWhere((e) => e.id == item.id || e.filePath == item.filePath);
-      if (_selectedItem?.id == item.id) {
-        _selectedItem = _items.isNotEmpty ? _items.first : null;
+      _allItems.removeWhere(
+        (e) => e.id == item.id || e.filePath == item.filePath,
+      );
+      final remaining = _filteredItems;
+      if (remaining.isEmpty) {
+        _fullscreenIndex = null;
+      } else if (_fullscreenIndex != null &&
+          _fullscreenIndex! >= remaining.length) {
+        _fullscreenIndex = remaining.length - 1;
       }
     });
   }
 
-  Future<void> _sharePhoto(SavedPhotoItem item) async {
+  Future<void> _shareMedia(SavedPhotoItem item) async {
     final file = File(item.filePath);
     if (!await file.exists()) return;
     try {
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(item.filePath)],
-          text: 'GestureLens (${item.filterName} - ${item.portalModeLabel})',
+          text: 'GestureLens (${item.filterName})',
         ),
       );
     } catch (_) {
@@ -99,166 +163,513 @@ class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
     }
   }
 
+  Future<void> _openVideoExternally(SavedPhotoItem item) async {
+    final path = item.filePath;
+    if (!await File(path).exists()) return;
+    try {
+      if (Platform.isLinux) {
+        await Process.start('xdg-open', [path]);
+        return;
+      } else if (Platform.isMacOS) {
+        await Process.start('open', [path]);
+        return;
+      } else if (Platform.isWindows) {
+        await Process.start('cmd', ['/c', 'start', '', path]);
+        return;
+      }
+    } catch (_) {}
+    await _shareMedia(item);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final items = _filteredItems;
+    final isDetailOpen =
+        _fullscreenIndex != null &&
+        _fullscreenIndex! >= 0 &&
+        _fullscreenIndex! < items.length;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0F19),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF111827),
-        foregroundColor: Colors.white,
-        title: Text('Riwayat Foto (${_items.length})'),
-        actions: [
-          if (_selectedItem != null) ...[
-            IconButton(
-              tooltip: 'Bagikan Foto',
-              onPressed: () => _sharePhoto(_selectedItem!),
-              icon: const Icon(Icons.share_rounded),
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          // Main Content: either iOS Clean Grid or iOS Fullscreen Paged Viewer
+          Positioned.fill(
+            child: isDetailOpen
+                ? _buildFullscreenViewer(items)
+                : _buildIosGridContent(items),
+          ),
+
+          // Top Frosted Glass Navigation Bar (iOS style)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _buildIosTopBar(items, isDetailOpen: isDetailOpen),
+          ),
+
+          // Bottom Frosted Action Bar in Fullscreen Detail View
+          if (isDetailOpen)
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: _buildIosBottomToolbar(items[_fullscreenIndex!]),
             ),
-            IconButton(
-              tooltip: 'Hapus Foto',
-              onPressed: () => _confirmAndDelete(_selectedItem!),
-              icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-            ),
-          ],
         ],
       ),
-      body: _items.isEmpty
-          ? const Center(
-              child: Text(
-                'Belum ada foto yang disimpan.',
-                style: TextStyle(color: Colors.white70, fontSize: 16),
+    );
+  }
+
+  Widget _buildIosTopBar(
+    List<SavedPhotoItem> items, {
+    required bool isDetailOpen,
+  }) {
+    final activeItem = isDetailOpen ? items[_fullscreenIndex!] : null;
+
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          padding: EdgeInsets.only(
+            top: MediaQuery.of(context).padding.top + 8,
+            bottom: 10,
+            left: 12,
+            right: 16,
+          ),
+          decoration: BoxDecoration(
+            color: const Color(0xFF121214).withValues(alpha: 0.78),
+            border: const Border(
+              bottom: BorderSide(color: Colors.white12, width: 0.5),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // Left button: Back to Camera or Back to Grid
+              CupertinoButton(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                minimumSize: Size.zero,
+                onPressed: isDetailOpen
+                    ? _closeFullscreen
+                    : () => Navigator.of(context).pop(),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      CupertinoIcons.chevron_back,
+                      color: Color(0xFF0A84FF),
+                      size: 22,
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      isDetailOpen ? 'Galeri' : 'Kamera',
+                      style: const TextStyle(
+                        color: Color(0xFF0A84FF),
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            )
-          : Row(
-              children: [
-                // Thumbnail list sidebar for landscape ergonomics
-                SizedBox(
-                  width: 240,
-                  child: ListView.separated(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: _items.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      final item = _items[index];
-                      final isSelected = _selectedItem?.id == item.id;
-                      final file = File(item.filePath);
-                      return InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: () => setState(() => _selectedItem = item),
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? const Color(0xFF1E293B)
-                                : const Color(0xFF111827),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isSelected
-                                  ? const Color(0xFF00F0FF)
-                                  : Colors.white12,
-                              width: isSelected ? 2 : 1,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: SizedBox(
-                                  width: 60,
-                                  height: 44,
-                                  child: file.existsSync()
-                                      ? Image.file(
-                                          file,
-                                          fit: BoxFit.cover,
-                                        )
-                                      : const ColoredBox(
-                                          color: Colors.black26,
-                                          child: Icon(
-                                            Icons.broken_image_outlined,
-                                            color: Colors.white38,
-                                          ),
-                                        ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      item.triggerSource.label,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      _formatTimestamp(item.capturedAt),
-                                      style: const TextStyle(
-                                        color: Colors.white60,
-                                        fontSize: 11,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
+
+              // Center: Segmented Control in Grid mode, or Date/Time in Detail mode
+              if (!isDetailOpen)
+                CupertinoSlidingSegmentedControl<_GalleryMediaFilter>(
+                  groupValue: _activeFilter,
+                  backgroundColor: const Color(0xFF2C2C2E),
+                  thumbColor: const Color(0xFF48484A),
+                  children: {
+                    for (final filter in _GalleryMediaFilter.values)
+                      filter: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 5,
+                        ),
+                        child: Text(
+                          filter.label,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
-                      );
-                    },
+                      ),
+                  },
+                  onValueChanged: (val) {
+                    if (val != null) {
+                      setState(() {
+                        _activeFilter = val;
+                        _fullscreenIndex = null;
+                      });
+                    }
+                  },
+                )
+              else if (activeItem != null)
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      activeItem.isVideo ? 'Video Portal' : activeItem.filterName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _formatDateShort(activeItem.capturedAt),
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+
+              // Right: Item count badge or Select/Index info
+              Text(
+                isDetailOpen
+                    ? '${_fullscreenIndex! + 1} dari ${items.length}'
+                    : '${items.length} Item',
+                style: const TextStyle(
+                  color: Colors.white60,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIosGridContent(List<SavedPhotoItem> items) {
+    if (items.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              CupertinoIcons.photo_on_rectangle,
+              color: Colors.white24,
+              size: 54,
+            ),
+            const SizedBox(height: 14),
+            Text(
+              _activeFilter == _GalleryMediaFilter.videos
+                  ? 'Belum Ada Video'
+                  : 'Belum Ada Foto atau Video',
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Foto dan video yang Anda ambil akan tampil di sini.',
+              style: TextStyle(color: Colors.white38, fontSize: 13),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final topPadding = MediaQuery.of(context).padding.top + 64;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final crossAxisCount = screenWidth >= 900
+        ? 5
+        : (screenWidth >= 600 ? 4 : 3);
+
+    return GridView.builder(
+      padding: EdgeInsets.fromLTRB(12, topPadding, 12, 24),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: crossAxisCount,
+        mainAxisSpacing: 6,
+        crossAxisSpacing: 6,
+        childAspectRatio: 1.25,
+      ),
+      itemCount: items.length,
+      itemBuilder: (context, index) {
+        final item = items[index];
+        return _buildIosGridTile(item, index);
+      },
+    );
+  }
+
+  Widget _buildIosGridTile(SavedPhotoItem item, int index) {
+    final previewPath = item.thumbnailPath ?? item.filePath;
+    final previewFile = File(previewPath);
+    final canRenderImage =
+        previewFile.existsSync() &&
+        (previewPath.toLowerCase().endsWith('.png') ||
+            previewPath.toLowerCase().endsWith('.gif') ||
+            previewPath.toLowerCase().endsWith('.jpg'));
+
+    return GestureDetector(
+      key: Key('gallery_tile_${item.id}'),
+      onTap: () => _openFullscreen(index),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Container(
+              color: const Color(0xFF1C1C1E),
+              child: canRenderImage
+                  ? Image.file(
+                      previewFile,
+                      fit: BoxFit.cover,
+                    )
+                  : const Center(
+                      child: Icon(
+                        CupertinoIcons.videocam_fill,
+                        color: Colors.white38,
+                        size: 32,
+                      ),
+                    ),
+            ),
+
+            // Subtle bottom gradient for badges (iOS Photos style)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 32,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.68),
+                    ],
                   ),
                 ),
-                const VerticalDivider(width: 1, color: Colors.white12),
-                // Full-size image viewer
-                Expanded(
-                  child: _selectedItem == null
-                      ? const SizedBox.shrink()
-                      : Column(
+              ),
+            ),
+
+            // Video indicator + duration (bottom-right, iOS style)
+            if (item.isVideo)
+              Positioned(
+                left: 7,
+                right: 7,
+                bottom: 5,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Icon(
+                      CupertinoIcons.play_fill,
+                      color: Colors.white,
+                      size: 13,
+                    ),
+                    Text(
+                      _formatDuration(item.durationSeconds),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if (item.triggerSource == CaptureTriggerSource.autoBlink)
+              const Positioned(
+                right: 6,
+                bottom: 5,
+                child: Icon(
+                  CupertinoIcons.eye_fill,
+                  color: Color(0xFF00F5D4),
+                  size: 13,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFullscreenViewer(List<SavedPhotoItem> items) {
+    return PageView.builder(
+      controller: _pageController,
+      itemCount: items.length,
+      onPageChanged: (idx) {
+        setState(() {
+          _fullscreenIndex = idx;
+        });
+      },
+      itemBuilder: (context, index) {
+        final item = items[index];
+        final file = File(item.filePath);
+        final isPlayableImage =
+            file.existsSync() &&
+            (item.filePath.toLowerCase().endsWith('.png') ||
+                item.filePath.toLowerCase().endsWith('.gif'));
+
+        return Padding(
+          padding: const EdgeInsets.only(top: 64, bottom: 72),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              if (isPlayableImage)
+                InteractiveViewer(
+                  minScale: 1.0,
+                  maxScale: 4.0,
+                  child: Image.file(
+                    file,
+                    fit: BoxFit.contain,
+                  ),
+                )
+              else if (item.thumbnailPath != null &&
+                  File(item.thumbnailPath!).existsSync())
+                Image.file(
+                  File(item.thumbnailPath!),
+                  fit: BoxFit.contain,
+                )
+              else
+                const Icon(
+                  CupertinoIcons.videocam_circle_fill,
+                  color: Colors.white38,
+                  size: 84,
+                ),
+
+              // If this is an MP4 video, show an iOS-style frosted Play pill
+              if (item.isVideo && item.filePath.toLowerCase().endsWith('.mp4'))
+                GestureDetector(
+                  onTap: () => _openVideoExternally(item),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(40),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 22,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(40),
+                          border: Border.all(color: Colors.white30),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.all(16),
-                                child: InteractiveViewer(
-                                  child: File(_selectedItem!.filePath).existsSync()
-                                      ? Image.file(
-                                          File(_selectedItem!.filePath),
-                                          fit: BoxFit.contain,
-                                        )
-                                      : const Center(
-                                          child: Text(
-                                            'File gambar tidak ditemukan',
-                                            style: TextStyle(color: Colors.white54),
-                                          ),
-                                        ),
-                                ),
-                              ),
+                            const Icon(
+                              CupertinoIcons.play_circle_fill,
+                              color: Colors.white,
+                              size: 28,
                             ),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 10,
-                              ),
-                              color: const Color(0xFF111827),
-                              child: Text(
-                                '${_selectedItem!.filename} • ${_formatTimestamp(_selectedItem!.capturedAt)}',
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                                overflow: TextOverflow.ellipsis,
+                            const SizedBox(width: 10),
+                            Text(
+                              'Putar Video (${_formatDuration(item.durationSeconds)})',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],
                         ),
+                      ),
+                    ),
+                  ),
                 ),
-              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildIosBottomToolbar(SavedPhotoItem item) {
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          padding: EdgeInsets.only(
+            top: 10,
+            bottom: MediaQuery.of(context).padding.bottom + 12,
+            left: 24,
+            right: 24,
+          ),
+          decoration: BoxDecoration(
+            color: const Color(0xFF121214).withValues(alpha: 0.78),
+            border: const Border(
+              top: BorderSide(color: Colors.white12, width: 0.5),
             ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // Share Button
+              CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                onPressed: () => _shareMedia(item),
+                child: const Icon(
+                  CupertinoIcons.share,
+                  color: Color(0xFF0A84FF),
+                  size: 23,
+                ),
+              ),
+
+              // Center Tag Pill
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2C2C2E),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      item.isVideo
+                          ? CupertinoIcons.videocam_fill
+                          : (item.triggerSource ==
+                                    CaptureTriggerSource.autoBlink
+                                ? CupertinoIcons.eye_fill
+                                : CupertinoIcons.camera_fill),
+                      color: const Color(0xFF00F5D4),
+                      size: 14,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${item.triggerSource.label} • ${item.portalModeLabel}',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Delete Button
+              CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                onPressed: () => _confirmAndDelete(item),
+                child: const Icon(
+                  CupertinoIcons.trash,
+                  color: Color(0xFFFF453A),
+                  size: 23,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
