@@ -14,6 +14,10 @@ class CameraTopStatusBar extends StatelessWidget {
   final bool autoCaptureEnabled;
   final AutoCaptureStatus autoCaptureStatus;
   final BlinkDetectorState blinkState;
+  final bool isBlinkCountdownActive;
+  final double blinkCountdownRemainingSeconds;
+  final bool isRecordingVideo;
+  final int recordingElapsedSeconds;
   final int fps;
 
   const CameraTopStatusBar({
@@ -25,8 +29,18 @@ class CameraTopStatusBar extends StatelessWidget {
     required this.autoCaptureEnabled,
     required this.autoCaptureStatus,
     this.blinkState = BlinkDetectorState.unarmed,
+    this.isBlinkCountdownActive = false,
+    this.blinkCountdownRemainingSeconds = 0.0,
+    this.isRecordingVideo = false,
+    this.recordingElapsedSeconds = 0,
     required this.fps,
   });
+
+  String _formatRecTime(int seconds) {
+    final mm = (seconds ~/ 60).toString().padLeft(2, '0');
+    final ss = (seconds % 60).toString().padLeft(2, '0');
+    return '$mm:$ss';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,10 +54,18 @@ class CameraTopStatusBar extends StatelessWidget {
           alignment: WrapAlignment.spaceBetween,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            // Active Filter & 2D/3D Mode badges
+            // Active Filter & 2D/3D Mode badges + Video Recording Pill
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (isRecordingVideo) ...[
+                  _StatusBadge(
+                    icon: Icons.fiber_manual_record_rounded,
+                    label: 'REC ${_formatRecTime(recordingElapsedSeconds)}',
+                    accentColor: const Color(0xFFFF3B30),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 _StatusBadge(
                   icon: Icons.auto_awesome_rounded,
                   label: 'Filter: ${activeFilter.displayName}',
@@ -100,6 +122,14 @@ class CameraTopStatusBar extends StatelessWidget {
   }
 
   Widget _buildBlinkGuidanceBadge() {
+    if (isBlinkCountdownActive) {
+      final secs = blinkCountdownRemainingSeconds.clamp(0.1, 1.5);
+      return _StatusBadge(
+        icon: Icons.timer_rounded,
+        label: 'Kedipan Terdeteksi! Cekrek ${secs.toStringAsFixed(1)}s...',
+        accentColor: const Color(0xFFFFD60A),
+      );
+    }
     if (autoCaptureStatus == AutoCaptureStatus.waitingForFace) {
       return const _StatusBadge(
         icon: Icons.face_retouching_natural_rounded,
@@ -111,7 +141,7 @@ class CameraTopStatusBar extends StatelessWidget {
       case BlinkDetectorState.armedOpen:
         return const _StatusBadge(
           icon: Icons.remove_red_eye_outlined,
-          label: 'Wajah Terdeteksi • Kedipkan Mata',
+          label: 'Wajah Terdeteksi • Kedip 1x untuk Foto (1.5s)',
           accentColor: Color(0xFF00F0FF),
         );
       case BlinkDetectorState.eyesClosed:
@@ -156,6 +186,8 @@ class CameraEdgeControlRail extends StatelessWidget {
   final bool showSkeleton;
   final bool canSwitchCamera;
   final bool isCaptureInProgress;
+  final bool isRecordingVideo;
+  final bool isEncodingVideo;
   final SavedPhotoItem? latestPhoto;
   final int totalSavedPhotos;
   final VoidCallback onPreviousFilter;
@@ -166,6 +198,7 @@ class CameraEdgeControlRail extends StatelessWidget {
   final VoidCallback onToggleCleanView;
   final VoidCallback onSwitchCamera;
   final VoidCallback onManualCapture;
+  final VoidCallback onToggleVideoRecording;
   final VoidCallback onOpenGallery;
 
   const CameraEdgeControlRail({
@@ -176,6 +209,8 @@ class CameraEdgeControlRail extends StatelessWidget {
     required this.showSkeleton,
     required this.canSwitchCamera,
     required this.isCaptureInProgress,
+    this.isRecordingVideo = false,
+    this.isEncodingVideo = false,
     required this.latestPhoto,
     required this.totalSavedPhotos,
     required this.onPreviousFilter,
@@ -186,11 +221,19 @@ class CameraEdgeControlRail extends StatelessWidget {
     required this.onToggleCleanView,
     required this.onSwitchCamera,
     required this.onManualCapture,
+    required this.onToggleVideoRecording,
     required this.onOpenGallery,
   });
 
   @override
   Widget build(BuildContext context) {
+    final thumbPath = latestPhoto?.thumbnailPath ?? latestPhoto?.filePath;
+    final hasValidThumb =
+        thumbPath != null &&
+        File(thumbPath).existsSync() &&
+        (thumbPath.toLowerCase().endsWith('.png') ||
+            thumbPath.toLowerCase().endsWith('.gif'));
+
     return SafeArea(
       top: false,
       child: Padding(
@@ -299,7 +342,7 @@ class CameraEdgeControlRail extends StatelessWidget {
               ),
             ),
 
-            // Right cluster: Auto Blink Capture toggle, Camera Switch, Manual Shutter, Recent Thumbnail
+            // Right cluster: Auto Blink Capture toggle, Camera Switch, Photo Shutter, Video Record, Recent Thumbnail
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
@@ -314,7 +357,8 @@ class CameraEdgeControlRail extends StatelessWidget {
                     key: const Key('auto_capture_toggle'),
                     selected: autoCaptureEnabled,
                     onSelected: (_) => onToggleAutoCapture(),
-                    selectedColor: const Color(0xFF00C853).withValues(alpha: 0.35),
+                    selectedColor:
+                        const Color(0xFF00C853).withValues(alpha: 0.35),
                     backgroundColor: Colors.white10,
                     checkmarkColor: const Color(0xFF3CFF82),
                     label: Text(
@@ -339,7 +383,7 @@ class CameraEdgeControlRail extends StatelessWidget {
                     ),
                   ],
                   const SizedBox(width: 8),
-                  // Manual Capture Shutter Button
+                  // Manual Photo Capture Shutter Button
                   GestureDetector(
                     key: const Key('manual_capture_button'),
                     onTap: isCaptureInProgress ? null : onManualCapture,
@@ -375,6 +419,51 @@ class CameraEdgeControlRail extends StatelessWidget {
                       ),
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  // iOS-style Video Record Button
+                  Tooltip(
+                    message: isRecordingVideo
+                        ? 'Hentikan Rekaman Video (V)'
+                        : 'Rekam Video Portal (V)',
+                    child: GestureDetector(
+                      key: const Key('video_record_button'),
+                      onTap: isEncodingVideo ? null : onToggleVideoRecording,
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white,
+                            width: 2.5,
+                          ),
+                          color: Colors.black26,
+                        ),
+                        child: Center(
+                          child: isEncodingVideo
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Color(0xFFFF3B30),
+                                  ),
+                                )
+                              : AnimatedContainer(
+                                  duration: const Duration(milliseconds: 180),
+                                  width: isRecordingVideo ? 20 : 34,
+                                  height: isRecordingVideo ? 20 : 34,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFF3B30),
+                                    borderRadius: BorderRadius.circular(
+                                      isRecordingVideo ? 5 : 20,
+                                    ),
+                                  ),
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
                   const SizedBox(width: 10),
                   // Recent capture thumbnail / gallery button
                   InkWell(
@@ -392,12 +481,11 @@ class CameraEdgeControlRail extends StatelessWidget {
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
-                          if (latestPhoto != null &&
-                              File(latestPhoto!.filePath).existsSync())
+                          if (hasValidThumb)
                             ClipRRect(
                               borderRadius: BorderRadius.circular(9),
                               child: Image.file(
-                                File(latestPhoto!.filePath),
+                                File(thumbPath),
                                 fit: BoxFit.cover,
                               ),
                             )
