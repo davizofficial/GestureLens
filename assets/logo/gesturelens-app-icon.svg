@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"><title>GestureLens Logo</title><rect width="256" height="256" rx="57.6" fill="#0B1021"/><g transform="translate(26.37 26.37) scale(0.794)">
+  
+  <path fill="#F8FAFC" fill-rule="evenodd" d="M 128 44 L 212 128 L 128 212 L 44 128 Z M 128 80 L 176 128 L 128 176 L 80 128 Z"/>
+  <path fill="#00F5D4" d="M 28 28 L 108 28 L 108 56 L 56 56 L 56 108 L 28 108 Z M 228 228 L 148 228 L 148 200 L 200 200 L 200 148 L 228 148 Z M 128 102 A 26 26 0 1 0 128 154 A 26 26 0 1 0 128 102 Z"/>
+</g></svg>

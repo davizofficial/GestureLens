@@ -1,0 +1,38 @@
+# Ignore everything by default except core source, documentation, and brand assets
+/*
+
+# Track core Dart source code in lib/
+!/lib/
+!/lib/**
+
+# Track essential package metadata, license, and documentation for GitHub
+!/.gitignore
+!/pubspec.yaml
+!/analysis_options.yaml
+!/README.md
+!/LICENSE
+
+# Track official GestureLens SVG/PNG logo assets used in README
+!/assets/
+/assets/*
+!/assets/logo/
+/assets/logo/*
+!/assets/logo/gesturelens-horizontal-on-dark.svg
+!/assets/logo/gesturelens-horizontal.svg
+!/assets/logo/gesturelens-app-icon.svg
+!/assets/logo/gesturelens-app-icon-512.png
+
+# Track docs folder for UI screenshots and demo videos
+!/docs/
+!/docs/**
+
+# Ignore OS, editor, and temporary files anywhere in the tree
+.DS_Store
+*.swp
+*.log
+*.iml
+.idea/
+.vscode/
+.dart_tool/
+build/
+coverage/
