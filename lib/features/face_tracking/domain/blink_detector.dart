@@ -82,11 +82,19 @@ class BlinkDetector {
   final Duration maxClosureDuration;
   final Duration cooldownDuration;
 
+  /// Optional relative drop from the user's open-eye baseline that counts as a blink closure.
+  final double relativeDropThreshold;
+
+  /// Optional duration where holding eyes closed (e.g. 1.5s) immediately triggers capture
+  /// without waiting for reopening.
+  final Duration? triggerOnHoldDuration;
+
   BlinkDetectorState _state = BlinkDetectorState.unarmed;
   int _consecutiveOpenFrames = 0;
   DateTime? _closedStartedAt;
   DateTime? _cooldownUntil;
   int? _lockedTrackingId;
+  double _rollingOpenBaseline = 0.80;
 
   BlinkDetector({
     this.openThreshold = AppConstants.defaultEyesOpenProbability,
@@ -97,6 +105,8 @@ class BlinkDetector {
     this.minClosureDuration = AppConstants.minBlinkClosureDuration,
     this.maxClosureDuration = AppConstants.maxBlinkClosureDuration,
     this.cooldownDuration = AppConstants.captureCooldownDuration,
+    this.relativeDropThreshold = 0.25,
+    this.triggerOnHoldDuration,
   });
 
   BlinkDetectorState get state => _state;
@@ -181,16 +191,10 @@ class BlinkDetector {
     final rightProb = selectedFace.rightEyeOpenProbability!;
     final avgProb = (leftProb + rightProb) * 0.5;
 
-    final bothOpen = leftProb >= openThreshold && rightProb >= openThreshold;
-    final bothClosed =
-        (leftProb <= closedThreshold && rightProb <= closedThreshold) ||
-        (avgProb <= closedThreshold &&
-            leftProb < openThreshold - 0.10 &&
-            rightProb < openThreshold - 0.10);
     final isWink =
         ((leftProb <= closedThreshold && rightProb >= openThreshold) ||
             (rightProb <= closedThreshold && leftProb >= openThreshold)) &&
-        (leftProb - rightProb).abs() >= 0.45;
+        (leftProb - rightProb).abs() >= 0.48;
 
     // A deliberate single-eye wink disarms the detector rather than triggering a blink
     if (isWink) {
@@ -202,9 +206,29 @@ class BlinkDetector {
       );
     }
 
+    final bothOpen =
+        (leftProb >= openThreshold && rightProb >= openThreshold) ||
+        (avgProb >= openThreshold &&
+            leftProb >= openThreshold - 0.08 &&
+            rightProb >= openThreshold - 0.08);
+
+    final relativeDropTriggered =
+        _state == BlinkDetectorState.armedOpen &&
+        (_rollingOpenBaseline - avgProb) >= relativeDropThreshold &&
+        avgProb <= openThreshold;
+
+    final bothClosed =
+        (leftProb <= closedThreshold && rightProb <= closedThreshold) ||
+        (avgProb <= closedThreshold &&
+            leftProb < openThreshold - 0.06 &&
+            rightProb < openThreshold - 0.06) ||
+        relativeDropTriggered;
+
     switch (_state) {
       case BlinkDetectorState.unarmed:
         if (bothOpen) {
+          _rollingOpenBaseline =
+              _rollingOpenBaseline * 0.7 + avgProb * 0.3;
           _consecutiveOpenFrames++;
           if (_consecutiveOpenFrames >= requiredInitialOpenFrames) {
             _state = BlinkDetectorState.armedOpen;
@@ -219,14 +243,6 @@ class BlinkDetector {
         );
 
       case BlinkDetectorState.armedOpen:
-        if (bothOpen) {
-          _consecutiveOpenFrames++;
-          return BlinkEvaluationResult(
-            state: _state,
-            blinkTriggered: false,
-            selectedFace: selectedFace,
-          );
-        }
         if (bothClosed) {
           _state = BlinkDetectorState.eyesClosed;
           _closedStartedAt = now;
@@ -236,7 +252,11 @@ class BlinkDetector {
             selectedFace: selectedFace,
           );
         }
-        // Intermediate eye probability (transitioning eyelid): keep armedOpen
+        if (bothOpen) {
+          _rollingOpenBaseline =
+              _rollingOpenBaseline * 0.8 + avgProb * 0.2;
+          _consecutiveOpenFrames++;
+        }
         return BlinkEvaluationResult(
           state: _state,
           blinkTriggered: false,
@@ -245,6 +265,21 @@ class BlinkDetector {
 
       case BlinkDetectorState.eyesClosed:
         final closureDuration = now.difference(_closedStartedAt!);
+
+        // If configured to trigger directly when held closed for e.g. 1.5s:
+        if (triggerOnHoldDuration != null &&
+            closureDuration >= triggerOnHoldDuration!) {
+          _state = BlinkDetectorState.cooldown;
+          _cooldownUntil = now.add(cooldownDuration);
+          _consecutiveOpenFrames = 0;
+          _closedStartedAt = null;
+          return BlinkEvaluationResult(
+            state: _state,
+            blinkTriggered: true,
+            selectedFace: selectedFace,
+          );
+        }
+
         if (closureDuration > maxClosureDuration) {
           // Eyes held closed too long -> disarm so sustained closure never triggers capture
           _disarm();
@@ -269,7 +304,7 @@ class BlinkDetector {
               selectedFace: selectedFace,
             );
           } else {
-            // Closure was too brief (< 80ms noise) -> return to armedOpen
+            // Closure was too brief -> return to armedOpen
             _state = BlinkDetectorState.armedOpen;
             _closedStartedAt = null;
             return BlinkEvaluationResult(
