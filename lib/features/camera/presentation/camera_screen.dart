@@ -11,6 +11,7 @@ import '../../../core/utils/frame_scheduler.dart';
 import '../../capture/data/photo_storage_service.dart';
 import '../../capture/domain/capture_event.dart';
 import '../../capture/services/auto_capture_controller.dart';
+import '../../capture/services/video_recording_service.dart';
 import '../../effects/data/portal_processor.dart';
 import '../../effects/domain/filter_type.dart';
 import '../../effects/domain/portal_geometry.dart';
@@ -33,7 +34,9 @@ class GestureLensSessionController extends ChangeNotifier {
   final BlinkDetector blinkDetector;
   final PortalProcessor portalProcessor;
   final AutoCaptureController autoCaptureController;
+  final VideoRecordingService videoRecordingService;
   final FrameScheduler frameScheduler;
+  final Duration blinkCaptureDelay;
 
   CameraLifecycleStatus _cameraStatus = CameraLifecycleStatus.uninitialized;
   TrackingStatus _trackingStatus = TrackingStatus.idle;
@@ -49,6 +52,11 @@ class GestureLensSessionController extends ChangeNotifier {
   NormalizedCameraFramePacket? _latestFramePacket;
   ui.Image? _processedPortalPreviewImage;
   bool _isUpdatingPortalPreview = false;
+
+  bool _isBlinkCountdownActive = false;
+  double _blinkCountdownRemainingSeconds = 0.0;
+  Timer? _blinkCountdownTimer;
+  Timer? _recordingUiTimer;
 
   AppError? _fatalCameraError;
   String? _feedbackBannerMessage;
@@ -68,7 +76,9 @@ class GestureLensSessionController extends ChangeNotifier {
     BlinkDetector? blinkDetector,
     PortalProcessor? portalProcessor,
     AutoCaptureController? autoCaptureController,
+    VideoRecordingService? videoRecordingService,
     FrameScheduler? frameScheduler,
+    this.blinkCaptureDelay = const Duration(milliseconds: 1500),
   }) : cameraService = cameraService ?? CameraService(),
        handTrackingService = handTrackingService ?? HandTrackingService(),
        faceTrackingService = faceTrackingService ?? FaceTrackingService(),
@@ -76,17 +86,21 @@ class GestureLensSessionController extends ChangeNotifier {
        blinkDetector =
            blinkDetector ??
            BlinkDetector(
-             openThreshold: 0.55,
-             closedThreshold: 0.36,
-             minFaceConfidence: 0.45,
-             minFaceWidthFraction: 0.05,
-             minClosureDuration: const Duration(milliseconds: 25),
-             maxClosureDuration: const Duration(milliseconds: 1200),
+             openThreshold: 0.52,
+             closedThreshold: 0.42,
+             relativeDropThreshold: 0.22,
+             minFaceConfidence: 0.35,
+             minFaceWidthFraction: 0.04,
+             minClosureDuration: const Duration(milliseconds: 20),
+             maxClosureDuration: const Duration(milliseconds: 2200),
+             triggerOnHoldDuration: const Duration(milliseconds: 1400),
            ),
        portalProcessor = portalProcessor ?? const PortalProcessor(),
        autoCaptureController =
            autoCaptureController ??
            AutoCaptureController(storageService: PhotoStorageService()),
+       videoRecordingService =
+           videoRecordingService ?? VideoRecordingService(),
        frameScheduler =
            frameScheduler ??
            FrameScheduler(
@@ -98,6 +112,11 @@ class GestureLensSessionController extends ChangeNotifier {
   TrackingStatus get trackingStatus => _trackingStatus;
   AutoCaptureStatus get autoCaptureStatus => _autoCaptureStatus;
   BlinkDetectorState get blinkState => blinkDetector.state;
+  bool get isBlinkCountdownActive => _isBlinkCountdownActive;
+  double get blinkCountdownRemainingSeconds => _blinkCountdownRemainingSeconds;
+  bool get isRecordingVideo => videoRecordingService.isRecording;
+  bool get isEncodingVideo => videoRecordingService.isEncoding;
+  int get recordingElapsedSeconds => videoRecordingService.elapsedSeconds;
   FilterType get activeFilter => _activeFilter;
   PortalRenderMode get portalMode => _portalMode;
   bool get showSkeleton => _showSkeleton;
@@ -192,6 +211,7 @@ class GestureLensSessionController extends ChangeNotifier {
         _cameraStatus == CameraLifecycleStatus.cameraPaused) {
       return;
     }
+    _cancelBlinkCountdown();
     frameScheduler.reset();
     gestureInterpreter.reset();
     blinkDetector.reset();
@@ -213,6 +233,12 @@ class GestureLensSessionController extends ChangeNotifier {
     }
 
     final now = packet.timestamp;
+
+    // Sample composite frame if video recording is active and portal is not currently updating
+    if (videoRecordingService.shouldSampleNextFrame(now) &&
+        !_portalGeometry.isValid) {
+      _sampleFrameForVideoRecording(packet, now);
+    }
 
     // 1. Bounded Hand Detection Job
     if (handTrackingService.isReady && frameScheduler.canScheduleHand(now)) {
@@ -246,6 +272,29 @@ class GestureLensSessionController extends ChangeNotifier {
         }),
       );
     }
+  }
+
+  void _sampleFrameForVideoRecording(
+    NormalizedCameraFramePacket packet,
+    DateTime now,
+  ) {
+    try {
+      final decoded = portalProcessor.decodeCameraFrame(
+        packet.rawFrame,
+        mirrorHorizontally: packet.mirrorHorizontally,
+      );
+      final previewSource = decoded.width > 480
+          ? img.copyResize(decoded, width: 480)
+          : decoded;
+      final processed = portalProcessor.processFrame(
+        sourceImage: previewSource,
+        portal: _portalGeometry,
+        primaryFilter: _activeFilter,
+        hands: _activeHands,
+        includeSkeleton: _showSkeleton,
+      );
+      videoRecordingService.addProcessedFrame(processed, now);
+    } catch (_) {}
   }
 
   void _handleHandDetectionOutput(
@@ -317,6 +366,21 @@ class GestureLensSessionController extends ChangeNotifier {
           hands: const [],
           includeSkeleton: false,
         );
+
+        final now = DateTime.now();
+        if (videoRecordingService.shouldSampleNextFrame(now)) {
+          final frameForVideo = _showSkeleton
+              ? portalProcessor.processFrame(
+                  sourceImage: previewSource,
+                  portal: portal,
+                  primaryFilter: filter,
+                  hands: _activeHands,
+                  includeSkeleton: true,
+                )
+              : processed;
+          videoRecordingService.addProcessedFrame(frameForVideo, now);
+        }
+
         final pngBytes = Uint8List.fromList(img.encodePng(processed));
         final codec = await ui.instantiateImageCodec(pngBytes);
         final frameInfo = await codec.getNextFrame();
@@ -341,7 +405,7 @@ class GestureLensSessionController extends ChangeNotifier {
   ) async {
     if (_isDisposed || !autoCaptureEnabled) return;
 
-    if (isCaptureInProgress) {
+    if (isCaptureInProgress || _isBlinkCountdownActive) {
       return;
     }
 
@@ -353,7 +417,7 @@ class GestureLensSessionController extends ChangeNotifier {
     }
 
     if (eval.blinkTriggered) {
-      await _executeCapture(CaptureTriggerSource.autoBlink);
+      _triggerBlinkCountdownOrImmediateCapture();
       return;
     }
 
@@ -367,6 +431,51 @@ class GestureLensSessionController extends ChangeNotifier {
         _autoCaptureStatus = AutoCaptureStatus.captureCooldown;
     }
     _notifySafely();
+  }
+
+  /// Starts the 1.5-second (1500ms) countdown when 1 blink is detected,
+  /// then immediately snaps the photo ("Cekrek!").
+  void _triggerBlinkCountdownOrImmediateCapture() {
+    if (_isBlinkCountdownActive || isCaptureInProgress) return;
+
+    if (blinkCaptureDelay <= Duration.zero) {
+      unawaited(_executeCapture(CaptureTriggerSource.autoBlink));
+      return;
+    }
+
+    _isBlinkCountdownActive = true;
+    final totalMs = blinkCaptureDelay.inMilliseconds;
+    var remainingMs = totalMs;
+    _blinkCountdownRemainingSeconds = remainingMs / 1000.0;
+    _notifySafely();
+
+    _blinkCountdownTimer?.cancel();
+    _blinkCountdownTimer = Timer.periodic(
+      const Duration(milliseconds: 100),
+      (timer) {
+        if (_isDisposed || !autoCaptureEnabled) {
+          _cancelBlinkCountdown();
+          return;
+        }
+        remainingMs -= 100;
+        if (remainingMs <= 0) {
+          timer.cancel();
+          _isBlinkCountdownActive = false;
+          _blinkCountdownRemainingSeconds = 0.0;
+          unawaited(_executeCapture(CaptureTriggerSource.autoBlink));
+        } else {
+          _blinkCountdownRemainingSeconds = remainingMs / 1000.0;
+          _notifySafely();
+        }
+      },
+    );
+  }
+
+  void _cancelBlinkCountdown() {
+    _blinkCountdownTimer?.cancel();
+    _blinkCountdownTimer = null;
+    _isBlinkCountdownActive = false;
+    _blinkCountdownRemainingSeconds = 0.0;
   }
 
   void selectNextFilter() {
@@ -428,6 +537,7 @@ class GestureLensSessionController extends ChangeNotifier {
   Future<void> toggleAutoBlinkCapture() async {
     final nextState = !autoCaptureEnabled;
     autoCaptureController.setAutoCaptureEnabled(nextState);
+    _cancelBlinkCountdown();
     blinkDetector.reset();
 
     if (nextState) {
@@ -441,6 +551,59 @@ class GestureLensSessionController extends ChangeNotifier {
     _notifySafely();
   }
 
+  Future<void> toggleVideoRecording() async {
+    if (videoRecordingService.isEncoding) return;
+
+    if (!videoRecordingService.isRecording) {
+      final now = DateTime.now();
+      videoRecordingService.startRecording(now);
+      if (_latestFramePacket != null) {
+        _sampleFrameForVideoRecording(_latestFramePacket!, now);
+      }
+      _recordingUiTimer?.cancel();
+      _recordingUiTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => _notifySafely(),
+      );
+      _showFeedback('Merekam Video Portal...');
+      _notifySafely();
+      return;
+    }
+
+    // Stop recording and encode
+    _recordingUiTimer?.cancel();
+    _recordingUiTimer = null;
+    _notifySafely();
+
+    final now = DateTime.now();
+    try {
+      final artifact = await videoRecordingService.stopAndEncodeRecording(now);
+      if (artifact == null) return;
+
+      final savedItem = await autoCaptureController.storageService
+          .saveRecordedVideo(
+            sourceVideoPath: artifact.videoFilePath,
+            thumbnailPngBytes: artifact.thumbnailPngBytes,
+            capturedAt: now,
+            durationSeconds: artifact.durationSeconds,
+            filterName: _activeFilter.displayName,
+            portalModeLabel: _portalMode.label,
+          );
+      autoCaptureController.registerSavedMediaItem(savedItem);
+      _showFeedback('Video berhasil disimpan (${savedItem.filename})');
+    } catch (e) {
+      final err = e is AppError
+          ? e
+          : AppError.fromCode(
+              AppErrorCode.photoSavingFailed,
+              cause: e,
+              customDetail: 'Gagal menyimpan video',
+            );
+      _showFeedback(err.message, isError: true);
+    }
+    _notifySafely();
+  }
+
   Future<void> switchCamera() async {
     if (!cameraService.canSwitchCamera) return;
     _cameraStatus = CameraLifecycleStatus.cameraInitializing;
@@ -450,6 +613,7 @@ class GestureLensSessionController extends ChangeNotifier {
       await handTrackingService.resetTracking();
       faceTrackingService.resetTracking();
       gestureInterpreter.reset();
+      _cancelBlinkCountdown();
       blinkDetector.reset();
       await cameraService.switchCamera(onFrame: onCameraFrameReceived);
       _cameraStatus = CameraLifecycleStatus.cameraReady;
@@ -588,6 +752,8 @@ class GestureLensSessionController extends ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
+    _blinkCountdownTimer?.cancel();
+    _recordingUiTimer?.cancel();
     _feedbackClearTimer?.cancel();
     _processedPortalPreviewImage?.dispose();
     unawaited(cameraService.disposeCamera());
@@ -660,6 +826,9 @@ class _CameraScreenState extends State<CameraScreen>
       _controller.togglePortalMode();
     } else if (key == LogicalKeyboardKey.space) {
       unawaited(_controller.triggerManualCapture());
+    } else if (key == LogicalKeyboardKey.keyV ||
+        key == LogicalKeyboardKey.keyR) {
+      unawaited(_controller.toggleVideoRecording());
     } else if (key == LogicalKeyboardKey.keyB) {
       unawaited(_controller.toggleAutoBlinkCapture());
     } else if (key == LogicalKeyboardKey.keyS) {
@@ -774,7 +943,48 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                     ),
                   ),
 
-                // 3. Brief Shutter Flash Feedback
+                // 3. Center 1.5s Blink Countdown HUD
+                if (ctrl.isBlinkCountdownActive)
+                  Center(
+                    child: IgnorePointer(
+                      child: Container(
+                        key: const Key('blink_countdown_overlay'),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 14,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0B1021).withValues(alpha: 0.82),
+                          borderRadius: BorderRadius.circular(32),
+                          border: Border.all(
+                            color: const Color(0xFF00F5D4),
+                            width: 2,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.camera_enhance_rounded,
+                              color: Color(0xFF00F5D4),
+                              size: 26,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              'Kedipan Terdeteksi! Cekrek dalam ${ctrl.blinkCountdownRemainingSeconds.toStringAsFixed(1)}s',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // 4. Brief Shutter Flash Feedback
                 if (ctrl.showShutterFlash)
                   IgnorePointer(
                     child: Container(
@@ -783,7 +993,7 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                     ),
                   ),
 
-                // 4. Clean View Mode: only a subtle floating button to unhide UI
+                // 5. Clean View Mode: only a subtle floating button to unhide UI
                 if (ctrl.hideUiOverlay)
                   Positioned(
                     top: 12,
@@ -829,7 +1039,7 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                     ),
                   ),
 
-                // 5. Top Status Overlay (Hidden when Clean View Mode is active)
+                // 6. Top Status Overlay (Hidden when Clean View Mode is active)
                 if (!ctrl.hideUiOverlay)
                   Positioned(
                     top: 0,
@@ -843,11 +1053,16 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                       autoCaptureEnabled: ctrl.autoCaptureEnabled,
                       autoCaptureStatus: ctrl.autoCaptureStatus,
                       blinkState: ctrl.blinkState,
+                      isBlinkCountdownActive: ctrl.isBlinkCountdownActive,
+                      blinkCountdownRemainingSeconds:
+                          ctrl.blinkCountdownRemainingSeconds,
+                      isRecordingVideo: ctrl.isRecordingVideo,
+                      recordingElapsedSeconds: ctrl.recordingElapsedSeconds,
                       fps: ctrl.fps,
                     ),
                   ),
 
-                // 6. Save / Feedback Toast Banner + Retry Action (Hidden when Clean View Mode is active)
+                // 7. Save / Feedback Toast Banner + Retry Action (Hidden when Clean View Mode is active)
                 if (!ctrl.hideUiOverlay && ctrl.feedbackBannerMessage != null)
                   Positioned(
                     top: 56,
@@ -912,7 +1127,7 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                     ),
                   ),
 
-                // 7. Bottom Edge Controls Rail (Hidden when Clean View Mode is active)
+                // 8. Bottom Edge Controls Rail (Hidden when Clean View Mode is active)
                 if (!ctrl.hideUiOverlay)
                   Positioned(
                     left: 0,
@@ -925,6 +1140,8 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                       showSkeleton: ctrl.showSkeleton,
                       canSwitchCamera: ctrl.cameraService.canSwitchCamera,
                       isCaptureInProgress: ctrl.isCaptureInProgress,
+                      isRecordingVideo: ctrl.isRecordingVideo,
+                      isEncodingVideo: ctrl.isEncodingVideo,
                       latestPhoto: ctrl.latestPhoto,
                       totalSavedPhotos: ctrl.photoHistory.length,
                       onPreviousFilter: ctrl.selectPreviousFilter,
@@ -935,6 +1152,7 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                       onToggleCleanView: ctrl.toggleCleanView,
                       onSwitchCamera: ctrl.switchCamera,
                       onManualCapture: ctrl.triggerManualCapture,
+                      onToggleVideoRecording: ctrl.toggleVideoRecording,
                       onOpenGallery: widget.onOpenGallery,
                     ),
                   ),
