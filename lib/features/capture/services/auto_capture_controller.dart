@@ -178,6 +178,10 @@ class AutoCaptureController {
     _history.removeWhere((e) => e.filePath == item.filePath || e.id == item.id);
   }
 
+  void registerSavedMediaItem(SavedPhotoItem item) {
+    _insertHistoryItemDeduplicated(item);
+  }
+
   void _insertHistoryItemDeduplicated(SavedPhotoItem item) {
     _history.removeWhere((e) => e.filePath == item.filePath || e.id == item.id);
     _history.insert(0, item);
