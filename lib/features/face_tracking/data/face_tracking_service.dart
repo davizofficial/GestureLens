@@ -18,6 +18,10 @@ abstract class FaceTrackingGateway {
 class FaceTrackingService implements FaceTrackingGateway {
   fd.FaceDetector? _detector;
 
+  /// Rolling adaptive baseline of open-eye EAR for the primary user.
+  double _leftOpenEarBaseline = 0.22;
+  double _rightOpenEarBaseline = 0.22;
+
   @override
   bool get isReady => _detector?.isReady ?? false;
 
@@ -26,21 +30,32 @@ class FaceTrackingService implements FaceTrackingGateway {
     if (isReady) return;
     try {
       final detector = fd.FaceDetector();
-      // Use backCamera/general model with lower presence threshold so faces are detected
-      // reliably at both desktop webcam distance (50-90cm) and mobile selfie distance.
       await detector.initialize(
-        model: fd.FaceDetectionModel.backCamera,
+        model: fd.FaceDetectionModel.frontCamera,
         meshPoolSize: 1,
         enableTracking: true,
-        minScore: 0.45,
-        minFacePresenceConfidence: 0.35,
+        minScore: 0.35,
+        minFacePresenceConfidence: 0.25,
       );
       _detector = detector;
-    } catch (e) {
-      throw AppError.fromCode(
-        AppErrorCode.faceDetectorInitializationFailed,
-        cause: e,
-      );
+    } catch (_) {
+      // Fallback to backCamera model if frontCamera fails to initialize on any target
+      try {
+        final fallbackDetector = fd.FaceDetector();
+        await fallbackDetector.initialize(
+          model: fd.FaceDetectionModel.backCamera,
+          meshPoolSize: 1,
+          enableTracking: true,
+          minScore: 0.35,
+          minFacePresenceConfidence: 0.25,
+        );
+        _detector = fallbackDetector;
+      } catch (e) {
+        throw AppError.fromCode(
+          AppErrorCode.faceDetectorInitializationFailed,
+          cause: e,
+        );
+      }
     }
   }
 
@@ -72,13 +87,15 @@ class FaceTrackingService implements FaceTrackingGateway {
         final ymin = rect.ymin.clamp(0.0, 1.0);
         final ymax = rect.ymax.clamp(0.0, 1.0);
 
-        final leftProb = _computeCombinedEyeOpenProbability(
+        final leftProb = _computeAdaptiveEyeOpenProbability(
           blendshapeProb: face.leftEyeOpenProbability,
           eyeContour: face.getContour(fd.FaceContourType.leftEye),
+          isLeftEye: true,
         );
-        final rightProb = _computeCombinedEyeOpenProbability(
+        final rightProb = _computeAdaptiveEyeOpenProbability(
           blendshapeProb: face.rightEyeOpenProbability,
           eyeContour: face.getContour(fd.FaceContourType.rightEye),
+          isLeftEye: false,
         );
 
         observations.add(
@@ -104,26 +121,54 @@ class FaceTrackingService implements FaceTrackingGateway {
     }
   }
 
-  /// Combines MediaPipe Blendshape eye-open probability with geometric Eye Aspect Ratio (EAR)
-  /// from the 16-point eye contour mesh so fast or partial webcam blinks are captured reliably.
-  double? _computeCombinedEyeOpenProbability({
+  /// Combines MediaPipe Blendshape probability with an adaptive Eye Aspect Ratio (EAR)
+  /// relative to the user's own open-eye baseline so webcam angle never locks the detector.
+  double? _computeAdaptiveEyeOpenProbability({
     required double? blendshapeProb,
     required List<fd.Point>? eyeContour,
+    required bool isLeftEye,
   }) {
-    final earProb = _computeEarOpenProbability(eyeContour);
-    if (blendshapeProb != null && earProb != null) {
-      // Take the lower value when closing so either blendshape or eyelid geometry can trigger closure,
-      // and average when open.
-      final minProb = math.min(blendshapeProb, earProb);
-      if (minProb <= 0.32) {
-        return minProb;
+    final rawEar = _computeRawEar(eyeContour);
+    double? earProb;
+
+    if (rawEar != null) {
+      double baseline = isLeftEye
+          ? _leftOpenEarBaseline
+          : _rightOpenEarBaseline;
+
+      // Adapt baseline smoothly toward upper observed EAR values (normal open eye)
+      if (rawEar > baseline) {
+        baseline = baseline * 0.75 + rawEar * 0.25;
+      } else if (rawEar > baseline * 0.80) {
+        baseline = baseline * 0.96 + rawEar * 0.04;
       }
-      return (blendshapeProb * 0.5 + earProb * 0.5).clamp(0.0, 1.0);
+      baseline = baseline.clamp(0.14, 0.36);
+
+      if (isLeftEye) {
+        _leftOpenEarBaseline = baseline;
+      } else {
+        _rightOpenEarBaseline = baseline;
+      }
+
+      // Ratio of current EAR to the user's open-eye baseline:
+      // >= 0.84 -> fully open (~0.85-1.0); <= 0.66 -> closed (~0.10-0.25)
+      final ratio = (rawEar / baseline).clamp(0.0, 1.2);
+      earProb = ((ratio - 0.62) / (0.88 - 0.62)).clamp(0.0, 1.0);
     }
+
+    if (blendshapeProb != null && earProb != null) {
+      // If either blendshape or adaptive EAR strongly signals a blink closure, surface it
+      if (blendshapeProb <= 0.42 || earProb <= 0.28) {
+        return math.min(blendshapeProb, earProb);
+      }
+      // Otherwise weight blendshape higher so normal open eyes stay comfortably >= 0.70
+      return (blendshapeProb * 0.65 + earProb * 0.35).clamp(0.0, 1.0);
+    }
+
     return blendshapeProb ?? earProb;
   }
 
-  double? _computeEarOpenProbability(List<fd.Point>? contour) {
+  double? _computeRawEar(List<fd.Point>? contour) {
     if (contour == null || contour.length < 16) return null;
 
     double dist(fd.Point a, fd.Point b) {
@@ -132,24 +177,21 @@ class FaceTrackingService implements FaceTrackingGateway {
       return math.sqrt(dx * dx + dy * dy);
     }
 
-    // Horizontal eye width between outer corner (0) and inner corner (8)
     final horiz = dist(contour[0], contour[8]);
     if (horiz <= 1e-4) return null;
 
-    // Three vertical eyelid distances across the center of the eye
     final v1 = dist(contour[3], contour[13]);
     final v2 = dist(contour[4], contour[12]);
     final v3 = dist(contour[5], contour[11]);
     final vert = (v1 + v2 + v3) / 3.0;
 
-    final ear = vert / horiz;
-    // Typical open EAR is ~0.24-0.34; closed EAR is ~0.08-0.17.
-    // Normalize [0.15 .. 0.24] -> [0.0 .. 1.0]
-    return ((ear - 0.155) / (0.245 - 0.155)).clamp(0.0, 1.0);
+    return vert / horiz;
   }
 
   @override
   void resetTracking() {
+    _leftOpenEarBaseline = 0.22;
+    _rightOpenEarBaseline = 0.22;
     _detector?.resetTracking();
   }
 
