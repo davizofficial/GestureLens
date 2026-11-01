@@ -19,6 +19,8 @@ abstract class CameraGateway {
   bool get isStreaming;
   bool get canSwitchCamera;
   bool get isFrontCamera;
+  bool get isMirrored;
+  void setMirrorOverride(bool? override);
   Size get previewSize;
 
   Future<void> initialize({CameraFrameCallback? onFrame});
@@ -33,6 +35,7 @@ class CameraService implements CameraGateway {
   int _selectedCameraIndex = 0;
   CameraController? _controller;
   bool _isStreaming = false;
+  bool? _mirrorOverride;
 
   @override
   bool get isInitialized => _controller?.value.isInitialized ?? false;
@@ -50,6 +53,25 @@ class CameraService implements CameraGateway {
     }
     return _cameras[_selectedCameraIndex].lensDirection ==
         CameraLensDirection.front;
+  }
+
+  @override
+  bool get isMirrored {
+    if (_mirrorOverride != null) {
+      return _mirrorOverride!;
+    }
+    final isDesktop = defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux;
+    if (isDesktop) {
+      return true;
+    }
+    return isFrontCamera;
+  }
+
+  @override
+  void setMirrorOverride(bool? override) {
+    _mirrorOverride = override;
   }
 
   @override
@@ -159,12 +181,7 @@ class CameraService implements CameraGateway {
         maxDim: 4096,
       );
 
-      // Front camera on mobile requires horizontal mirroring so coordinates match preview
-      final shouldMirror =
-          defaultTargetPlatform == TargetPlatform.android ||
-          defaultTargetPlatform == TargetPlatform.iOS
-          ? isFront
-          : false;
+      final shouldMirror = isMirrored;
 
       onFrame(
         NormalizedCameraFramePacket(
@@ -214,6 +231,14 @@ class CameraService implements CameraGateway {
     if (controller == null || !controller.value.isInitialized) {
       return const SizedBox.expand();
     }
-    return CameraPreview(controller);
+    final preview = CameraPreview(controller);
+    if (defaultTargetPlatform == TargetPlatform.windows && !isMirrored) {
+      return Transform(
+        alignment: Alignment.center,
+        transform: Matrix4.diagonal3Values(-1, 1, 1),
+        child: preview,
+      );
+    }
+    return preview;
   }
 }
