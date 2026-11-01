@@ -5,10 +5,6 @@
 !/lib/
 !/lib/**
 
-# Track test suites
-!/test/
-!/test/**
-
 # Track essential package metadata, license, and documentation for GitHub
 !/.gitignore
 !/pubspec.yaml
