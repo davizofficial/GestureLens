@@ -184,6 +184,7 @@ class CameraEdgeControlRail extends StatelessWidget {
   final PortalRenderMode portalMode;
   final bool autoCaptureEnabled;
   final bool showSkeleton;
+  final bool isCameraMirrored;
   final bool canSwitchCamera;
   final bool isCaptureInProgress;
   final bool isRecordingVideo;
@@ -195,6 +196,7 @@ class CameraEdgeControlRail extends StatelessWidget {
   final VoidCallback onTogglePortalMode;
   final VoidCallback onToggleAutoCapture;
   final VoidCallback onToggleSkeleton;
+  final VoidCallback? onToggleMirroring;
   final VoidCallback onToggleCleanView;
   final VoidCallback onSwitchCamera;
   final VoidCallback onManualCapture;
@@ -207,6 +209,7 @@ class CameraEdgeControlRail extends StatelessWidget {
     required this.portalMode,
     required this.autoCaptureEnabled,
     required this.showSkeleton,
+    this.isCameraMirrored = false,
     required this.canSwitchCamera,
     required this.isCaptureInProgress,
     this.isRecordingVideo = false,
@@ -218,6 +221,7 @@ class CameraEdgeControlRail extends StatelessWidget {
     required this.onTogglePortalMode,
     required this.onToggleAutoCapture,
     required this.onToggleSkeleton,
+    this.onToggleMirroring,
     required this.onToggleCleanView,
     required this.onSwitchCamera,
     required this.onManualCapture,
@@ -313,6 +317,23 @@ class CameraEdgeControlRail extends StatelessWidget {
                           : Colors.white54,
                     ),
                   ),
+                  if (onToggleMirroring != null) ...[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      key: const Key('toggle_mirror_button'),
+                      tooltip: isCameraMirrored
+                          ? 'Mirroring Aktif (F)'
+                          : 'Mirroring Nonaktif (F)',
+                      onPressed: onToggleMirroring,
+                      icon: Icon(
+                        Icons.flip_rounded,
+                        color: isCameraMirrored
+                            ? const Color(0xFF00F0FF)
+                            : Colors.white54,
+                        size: 22,
+                      ),
+                    ),
+                  ],
                   const SizedBox(width: 2),
                   OutlinedButton.icon(
                     key: const Key('hide_ui_button'),
