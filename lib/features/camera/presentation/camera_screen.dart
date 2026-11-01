@@ -129,6 +129,7 @@ class GestureLensSessionController extends ChangeNotifier {
   bool get isFeedbackError => _isFeedbackError;
   bool get showShutterFlash => _showShutterFlash;
   int get fps => _fps;
+  bool get isCameraMirrored => cameraService.isMirrored;
 
   bool get autoCaptureEnabled => autoCaptureController.autoCaptureEnabled;
   bool get isCaptureInProgress =>
@@ -534,6 +535,15 @@ class GestureLensSessionController extends ChangeNotifier {
     _notifySafely();
   }
 
+  void toggleCameraMirroring() {
+    final nextState = !cameraService.isMirrored;
+    cameraService.setMirrorOverride(nextState);
+    _showFeedback(
+      nextState ? 'Mirroring Kamera: Aktif' : 'Mirroring Kamera: Nonaktif',
+    );
+    _notifySafely();
+  }
+
   Future<void> toggleAutoBlinkCapture() async {
     final nextState = !autoCaptureEnabled;
     autoCaptureController.setAutoCaptureEnabled(nextState);
@@ -833,6 +843,8 @@ class _CameraScreenState extends State<CameraScreen>
       unawaited(_controller.toggleAutoBlinkCapture());
     } else if (key == LogicalKeyboardKey.keyS) {
       _controller.toggleSkeletonVisibility();
+    } else if (key == LogicalKeyboardKey.keyF) {
+      _controller.toggleCameraMirroring();
     } else if (key == LogicalKeyboardKey.keyH ||
         (key == LogicalKeyboardKey.escape && _controller.hideUiOverlay)) {
       _controller.toggleCleanView();
@@ -1149,6 +1161,8 @@ class _LandscapeCameraViewportState extends State<_LandscapeCameraViewport> {
                       onTogglePortalMode: ctrl.togglePortalMode,
                       onToggleAutoCapture: ctrl.toggleAutoBlinkCapture,
                       onToggleSkeleton: ctrl.toggleSkeletonVisibility,
+                      isCameraMirrored: ctrl.isCameraMirrored,
+                      onToggleMirroring: ctrl.toggleCameraMirroring,
                       onToggleCleanView: ctrl.toggleCleanView,
                       onSwitchCamera: ctrl.switchCamera,
                       onManualCapture: ctrl.triggerManualCapture,
