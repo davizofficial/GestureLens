@@ -39,29 +39,19 @@ In addition to hand-driven spatial filters, GestureLens integrates real-time eye
 
 ## UI Screenshots
 
-> Coming soon.
- <!--
-| 2D Polygonal Portal Mode | 3D Perspective Prism Mode |
-| :---: | :---: |
-| ![2D Portal Mode](docs/screenshots/ui-portal-2d.png) | ![3D Portal Mode](docs/screenshots/ui-portal-3d.png) |
-| *Real-time convex portal geometry stretched between two hands with the Dual Tone filter active.* | *Multi-layered 3D perspective portal prism with interactive hand skeleton tracking.* |
-
-| Clean View Mode (Hide UI) | Eye-Blink Auto Capture & Gallery |
-| :---: | :---: |
-| ![Clean View Mode](docs/screenshots/ui-clean-view.png) | ![Auto Blink Capture](docs/screenshots/ui-auto-blink-capture.png) |
-| *Distraction-free camera canvas showing only the live camera feed and active portal visual effects.* | *Hands-free photo capture triggered by an eye blink and stored in the in-app session gallery.* | 
-
--->
+<div align="center">
+  <img src="docs/screenshots/UI-main.jpeg" alt="GestureLens Main Camera View" width="49%">
+  <img src="docs/screenshots/example.jpeg" alt="GestureLens Hand Tracking and Filter Portal" width="49%">
+</div>
 
 ---
 
 ## Demo Video
 
-> Coming Soon
+[![GestureLens Interactive Demo](docs/demo/demo.gif)](docs/demo/demo.mp4)
 
-<!-- https://github.com/davizofficial/GestureLens/raw/main/docs/demo/gesturelens-demo.mp4
+> 📹 **[Click here to watch or download the full high-resolution demo video (demo.mp4)](docs/demo/demo.mp4)**
 
-*Fallback file path*: [`docs/demo/gesturelens-demo.mp4`](docs/demo/gesturelens-demo.mp4)
 
 ### What the Demo Shows
 
@@ -69,7 +59,7 @@ In addition to hand-driven spatial filters, GestureLens integrates real-time eye
 2. **Pinch-to-Switch Filter Cycling**: The user performs a quick thumb-to-pinky pinch gesture to cycle through the 11 built-in pixel filters in real time without touching the screen or keyboard.
 3. **2D to 3D Mode Transition**: The user closes both hands into fists simultaneously for a brief moment, switching the flat 2D portal polygon into a multi-layered 3D perspective prism.
 4. **Clean View Toggle**: The user activates the **Hide UI** feature, removing all status overlays and control bars so only the moving camera stream and portal visual effects are displayed.
-5. **Hands-Free Eye-Blink Photo Capture**: With **Auto Capture** enabled, the user blinks naturally at the camera. GestureLens detects the complete open-to-closed-to-open blink cycle, captures the composited frame, and saves the resulting image to the gallery. -->
+5. **Hands-Free Eye-Blink Photo Capture**: With **Auto Capture** enabled, the user blinks naturally at the camera. GestureLens detects the complete open-to-closed-to-open blink cycle, captures the composited frame, and saves the resulting image to the gallery.
 
 ---
 
