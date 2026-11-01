@@ -48,10 +48,7 @@ In addition to hand-driven spatial filters, GestureLens integrates real-time eye
 
 ## Demo Video
 
-[![GestureLens Interactive Demo](docs/demo/demo.gif)](docs/demo/demo.mp4)
-
-> 📹 **[Click here to watch or download the full high-resolution demo video (demo.mp4)](docs/demo/demo.mp4)**
-
+[![GestureLens Interactive Demo](docs/demo/demo.gif)]
 
 ### What the Demo Shows
 
