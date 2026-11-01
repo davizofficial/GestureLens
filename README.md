@@ -209,6 +209,8 @@ flutter build apk --release
 | `M` | Toggle between 2D Portal Mode and 3D Portal Mode |
 | `B` | Enable or disable Eye-Blink Auto Capture |
 | `S` | Show or hide the 21-point hand skeleton overlay |
+| `F` | Toggle camera horizontal mirroring |
+| `V` / `R` | Start or stop video recording |
 | `H` / `Esc` | Toggle Clean View Mode (Hide or Show UI controls) |
 | `Space` | Trigger manual photo capture |
 
